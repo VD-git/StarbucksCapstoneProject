@@ -411,7 +411,7 @@ class StarbucksProject():
             self._s3.upload_file('backup/feenhanced_backup.csv', self.bucket, 'backup/feenhanced_backup.csv')
             print(self._status_function(family = "Enhanced Feature Engineering", msg = "Adding Conversion Data"))
 
-    def fit_preprocess(self):
+    def fit_etl(self):
         """
         Save time and run all at once
         """
