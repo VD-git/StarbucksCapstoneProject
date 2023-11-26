@@ -8,7 +8,7 @@ import os
 import logging
 
 class StarbucksProject():
-    
+
     def __init__(self):
         """
         While the initiation of the class, the data and connections are already done, name of the files and folders are not supposed to be changed.
@@ -16,8 +16,8 @@ class StarbucksProject():
         self.portfolio = pd.read_json('data/portfolio.json', orient='records', lines=True)
         self.profile = pd.read_json('data/profile.json', orient='records', lines=True)
         self.transcript = pd.read_json('data/transcript.json', orient='records', lines=True)
-        self.conn = sqlite3.connect(':memory:')
-        self.transcript_completed_query = '''
+        self._conn = sqlite3.connect(':memory:')
+        self._transcript_completed_query = '''
             WITH TMP_DATA AS (
                 SELECT *,
                        ROW_NUMBER() OVER(
@@ -79,7 +79,7 @@ class StarbucksProject():
             )
             SELECT * FROM TMP_REC_COM
             '''
-        self.transcript_view_query = '''
+        self._transcript_view_query = '''
             WITH TMP_DATA AS (
                 SELECT *,
                        ROW_NUMBER() OVER(
@@ -116,9 +116,12 @@ class StarbucksProject():
             WHERE td.simultaneos_view = td.multiple_views
             AND time_receive >= 0
             '''
-        
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Data Import] Importation of Data - Done!')
-        
+        self._status_function(family = "Data Import", msg = "Importation of Data")
+
+    def _status_function(self, family:str, msg:str):
+        current_formated_time = datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
+        return "[{}] - [{}] {} - Done!".format(current_formated_time, family, msg)
+
     def feature_engineering(self):
         """
         A feature engineering is done here in order to extra info, such as:
@@ -132,21 +135,21 @@ class StarbucksProject():
         self.profile['day'] = self.profile.became_member_on.apply(lambda x: x%100)
         self.profile.drop(['became_member_on'], inplace = True, axis = 1)
         self.profile.rename(columns = {'id': 'customer_id'}, inplace = True)
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Feature Engineering] Profile - Done!')
+        print(self._status_function(family = "Feature Engineering", msg = "Profile"))
 
         self.transcript['amount'] = self.transcript.value.apply(lambda x: x.get('amount', None))
         self.transcript['offer_id'] = self.transcript.value.apply(lambda x: x.get('offer_id', None) if 'offer_id' in x.keys() else x.get('offer id', None))
         self.transcript['premium'] = self.transcript.value.apply(lambda x: x.get('reward', None))
         self.transcript.drop(['value'], inplace = True, axis = 1)
         self.transcript.rename(columns = {'person': 'customer_id'}, inplace = True)
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Feature Engineering] Transcript - Done!')
+        print(self._status_function(family = "Feature Engineering", msg = "Transcript"))
 
         channels = pd.get_dummies(self.portfolio.channels.apply(pd.Series).stack()).sum(level=0)
         self.portfolio = pd.concat([self.portfolio, channels], axis=1).drop(['channels'], axis = 1)
         self.portfolio.rename(columns = {'id': 'offer_id'}, inplace = True)
         self.portfolio.duration = self.portfolio.duration.apply(lambda x: x * 24)
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Feature Engineering] Portfolio - Done!')
-        
+        print(self._status_function(family = "Feature Engineering", msg = "Portfolio"))
+
     def reverse_engineering(self):
         """
         A reverse engeneering is done here in order to build the pipeline of the customer journey.
@@ -158,24 +161,24 @@ class StarbucksProject():
         """
         gathered_table = self.transcript.merge(self.profile, on = 'customer_id', how = 'left') \
                                         .merge(self.portfolio, on = 'offer_id', how = 'left')
-        
-        self.df_offer_received = gathered_table[gathered_table['event'] == 'offer received'][['customer_id', 'time', 'offer_id', 'duration']]
-        self.df_offer_completed = gathered_table[gathered_table['event'] == 'offer completed'][['customer_id', 'time', 'offer_id']]
-        self.df_offer_viewed = gathered_table[gathered_table['event'] == 'offer viewed'][['customer_id', 'time', 'offer_id']]
-        self.df_transactioned = gathered_table[gathered_table['event'] == 'transaction'][['customer_id', 'time', 'offer_id', 'amount']]
-        self.df_offer_received['time_limit'] = self.df_offer_received['time'] + self.df_offer_received['duration']
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Reverse Engineering] Offers + Transactions - Done!')
-        
+
+        self._df_offer_received = gathered_table[gathered_table['event'] == 'offer received'][['customer_id', 'time', 'offer_id', 'duration']]
+        self._df_offer_completed = gathered_table[gathered_table['event'] == 'offer completed'][['customer_id', 'time', 'offer_id']]
+        self._df_offer_viewed = gathered_table[gathered_table['event'] == 'offer viewed'][['customer_id', 'time', 'offer_id']]
+        self._df_transactioned = gathered_table[gathered_table['event'] == 'transaction'][['customer_id', 'time', 'offer_id', 'amount']]
+        self._df_offer_received['time_limit'] = self._df_offer_received['time'] + self._df_offer_received['duration']
+        print(self._status_function(family = "Reverse Engineering", msg = "Transactions"))
+
     def completed_query(self):
         """
         Query tables through sql in order to build the paths (Receive Offer -> View Offer -> Buy Offer)
         """
-        self.df_offer_received.to_sql('dor', self.conn, index=False)
-        self.df_offer_completed.to_sql('doc', self.conn, index=False)
+        self._df_offer_received.to_sql('dor', self._conn, index=False)
+        self._df_offer_completed.to_sql('doc', self._conn, index=False)
 
-        self.query_data_transcript_completed = pd.read_sql_query(self.transcript_completed_query, self.conn)
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Build Query] Offers Completed - Done!')
-        
+        self._query_data_transcript_completed = pd.read_sql_query(self._transcript_completed_query, self._conn)
+        print(self._status_function(family = "Build Query", msg = "Offers Completed"))
+
     def processing_views(self):
         """
         Since it is kinda tricky to build the full pipeline through sql, *View Offer* is added with a build-in function
@@ -187,12 +190,12 @@ class StarbucksProject():
         """
         if 'tcompleted_backup.csv' in os.listdir():
             self.transcript_completed = pd.read_csv('tcompleted_backup.csv')
-            print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Processing Views] Back-up Retrieved - Done!')
+            print(self._status_function(family = "Processing Views", msg = "Back-up Retrieved"))
         else:
-            self.transcript_completed = self.finding_view_time(self.query_data_transcript_completed, self.df_offer_viewed)
+            self.transcript_completed = self.finding_view_time(self._query_data_transcript_completed, self._df_offer_viewed)
             self.transcript_completed.to_csv('tcompleted_backup.csv', index = False)
-            print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Processing Views] Offers Completed - Done!')
-        
+            print(self._status_function(family = "Processing Views", msg = "Offers Enrich Views Completed"))
+
     def finding_view_time(self, raw_dataset, views):
         """
         Build-in function to fill the View time between Receive and Buy in the Completed Table
@@ -225,7 +228,7 @@ class StarbucksProject():
         raw_dataset_copy['time_for_view'] = raw_dataset_copy['time_completion'] - raw_dataset_copy['time_view']
         raw_dataset_copy['general_journey'] = 'offer_completed'
         return raw_dataset_copy[['customer_id', 'offer_id', 'time_receive', 'time_view', 'time_completion', 'time_for_completion', 'time_for_view', 'general_journey']]
-    
+
     def retriving_monetary_tcompleted(self):
         """
         Enrich the table with monetary values to train the model
@@ -238,91 +241,84 @@ class StarbucksProject():
         self.transcript_completed = self.transcript_completed.merge(monetary_values, \
                                                           on = ['customer_id', 'offer_id', 'time_completion'], \
                                                           how = 'left')
-        
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Processing Completed] Adding Amount Value - Done!')
-        
+        print(self._status_function(family = "Processing Completed", msg = "Adding Amount Value"))
+
     def build_received_viewed_table(self):
         """
         Build the Receive -> View journey removing the Receive -> View -> Buy journey
         """
-        
         left_anti_view = self.transcript_completed[['customer_id', 'offer_id', 'time_view']]\
                              .dropna(subset=['time_view'])
         left_anti_view['count'] = 1
-        
+
         left_anti_receive = self.transcript_completed[['customer_id', 'offer_id', 'time_receive']]\
                                 .dropna(subset=['time_receive'])
         left_anti_receive['count'] = 1
 
-        self.only_view = self.df_offer_viewed.rename(columns = {'time': 'time_view'})\
+        self._only_view = self._df_offer_viewed.rename(columns = {'time': 'time_view'})\
                              .merge(left_anti_view,\
                                     on = ['customer_id', 'offer_id', 'time_view'],\
                                     how = 'outer')\
                              .query('count != 1')\
                              .drop(['count'], axis = 1)
 
-        self.only_receive = self.df_offer_received.rename(columns = {'time': 'time_receive'})\
+        self._only_receive = self._df_offer_received.rename(columns = {'time': 'time_receive'})\
                                 .merge(left_anti_receive,\
                                        on = ['customer_id', 'offer_id', 'time_receive'],\
                                        how = 'outer')\
                                 .query('count != 1')\
                                 .drop(['count'], axis = 1)
-        self.only_view.to_sql('dov2', self.conn, index=False)
-        self.only_receive.to_sql('dor2', self.conn, index=False)
-        self.transcript_viewed= pd.read_sql_query(self.transcript_view_query, self.conn)
-        
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Processing Views] Building Views Table - Done!')
-        
+        self._only_view.to_sql('dov2', self._conn, index=False)
+        self._only_receive.to_sql('dor2', self._conn, index=False)
+        self.transcript_viewed= pd.read_sql_query(self._transcript_view_query, self._conn)
+        print(self._status_function(family = "Processing Views", msg = "Building Views Table"))
+
     def build_received_table(self):
         """
         Build the Receive journey removing the Receive -> View and Receive -> View -> Buy journey
         """
-        
         left_anti_view_receive = self.transcript_viewed[['customer_id', 'offer_id', 'time_receive']].dropna(subset=['time_receive'])
         left_anti_view_receive['count'] = 1
 
-        only_receive_view = self.only_receive\
+        only_receive_view = self._only_receive\
                                 .merge(left_anti_view_receive,\
                                        on = ['customer_id', 'offer_id', 'time_receive'],\
                                        how = 'outer')\
                                 .query('count != 1')\
                                 .drop(['count'], axis = 1)
-        
+
         self.transcript_received = only_receive_view[['customer_id', 'offer_id', 'time_receive']]
         self.transcript_received[['time_view', 'time_completion', 'time_for_completion', 'time_for_view']] = None
         self.transcript_received['general_journey'] = 'offer_received'
         self.transcript_received['amount'] = None
-        
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Processing Receive] Building Receive Table - Done!')
-        
+        print(self._status_function(family = "Processing Receive", msg = "Building Receive Table"))
+
     def build_transactional_table(self):
         """
         Build the Transactional journey just filtering the main dataset
         """
-        transcript_transactioned = self.df_transactioned.rename(columns = {'time': 'time_completion'})
+        transcript_transactioned = self._df_transactioned.rename(columns = {'time': 'time_completion'})
         transcript_transactioned[['time_receive', 'time_view', 'time_for_completion', 'time_for_view']] = None
         transcript_transactioned['general_journey'] = 'transactioned'
         self.transcript_transactioned = transcript_transactioned[self.transcript_received.columns]
-        
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Processing Transaction] Building Transactional Table - Done!')
-        
+        print(self._status_function(family = "Processing Transaction", msg = "Building Transactional Table"))
+
     def gathered_all_tables_fe(self):
         """
         Gathering all the tables with all the journeys build before in order to develop the model
         """
-        self.all_offers_n_transactions_gathered = pd.concat(\
+        self._all_offers_n_transactions_gathered = pd.concat(\
             [self.transcript_completed, self.transcript_viewed, self.transcript_received, self.transcript_transactioned], axis = 0)\
                                      .sample(frac = 1)\
                                      .reset_index()\
                                      .drop(['index'], axis = 1)
-        self.complete_table = self.all_offers_n_transactions_gathered\
+        self.complete_table = self._all_offers_n_transactions_gathered\
                                   .merge(self.profile, on = 'customer_id', how = 'left')\
                                   .merge(self.portfolio, on = 'offer_id', how = 'left')
-        
+
         self.complete_table.to_csv('preprocessed_data.csv', index = False, sep = ';')
-        
-        print(f'[{datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")}] - [Processing Dataset] Building Gathered Table - Done!')
-    
+        print(self._status_function(family = "Processing Datase", msg = "Building Gathered Table"))
+
     def fit_preprocess(self):
         """
         Save time and run all at once
@@ -336,9 +332,9 @@ class StarbucksProject():
         self.build_received_table()
         self.build_transactional_table()
         self.gathered_all_tables_fe()
-        
+
 
 if __name__ == '__main__':
-    
+
     SP = StarbucksProject()
     SP.fit_preprocess()
