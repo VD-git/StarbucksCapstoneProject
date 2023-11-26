@@ -6,6 +6,8 @@ import sqlite3
 import datetime
 import os
 import logging
+import boto3
+import sagemaker
 
 class StarbucksProject():
 
@@ -17,6 +19,11 @@ class StarbucksProject():
         self.profile = pd.read_json('data/profile.json', orient='records', lines=True)
         self.transcript = pd.read_json('data/transcript.json', orient='records', lines=True)
         self._conn = sqlite3.connect(':memory:')
+        self._session = sagemaker.Session()
+        self._s3 = boto3.client('s3')
+        self.role = sagemaker.get_execution_role()
+        self.bucket = self._session.default_bucket()
+        self.region = self._session.boto_region_name
         self._transcript_completed_query = '''
             WITH TMP_DATA AS (
                 SELECT *,
@@ -122,7 +129,13 @@ class StarbucksProject():
         current_formated_time = datetime.datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
         return "[{}] - [{}] {} - Done!".format(current_formated_time, family, msg)
 
-    def feature_engineering(self):
+    def _check_completion(self, view, completed, trans_type):
+        if trans_type == 'informational':
+            return 1 if not np.isnan(view) else 0
+        else:
+            return 1 if not np.isnan(view) and completed is not None else 0
+
+    def feature_engineering_basic(self):
         """
         A feature engineering is done here in order to extra info, such as:
         - *year* of membership
@@ -135,20 +148,20 @@ class StarbucksProject():
         self.profile['day'] = self.profile.became_member_on.apply(lambda x: x%100)
         self.profile.drop(['became_member_on'], inplace = True, axis = 1)
         self.profile.rename(columns = {'id': 'customer_id'}, inplace = True)
-        print(self._status_function(family = "Feature Engineering", msg = "Profile"))
+        print(self._status_function(family = "Basic Feature Engineering", msg = "Profile"))
 
         self.transcript['amount'] = self.transcript.value.apply(lambda x: x.get('amount', None))
         self.transcript['offer_id'] = self.transcript.value.apply(lambda x: x.get('offer_id', None) if 'offer_id' in x.keys() else x.get('offer id', None))
         self.transcript['premium'] = self.transcript.value.apply(lambda x: x.get('reward', None))
         self.transcript.drop(['value'], inplace = True, axis = 1)
         self.transcript.rename(columns = {'person': 'customer_id'}, inplace = True)
-        print(self._status_function(family = "Feature Engineering", msg = "Transcript"))
+        print(self._status_function(family = "Basic Feature Engineering", msg = "Transcript"))
 
         channels = pd.get_dummies(self.portfolio.channels.apply(pd.Series).stack()).sum(level=0)
         self.portfolio = pd.concat([self.portfolio, channels], axis=1).drop(['channels'], axis = 1)
         self.portfolio.rename(columns = {'id': 'offer_id'}, inplace = True)
         self.portfolio.duration = self.portfolio.duration.apply(lambda x: x * 24)
-        print(self._status_function(family = "Feature Engineering", msg = "Portfolio"))
+        print(self._status_function(family = "Basic Feature Engineering", msg = "Portfolio"))
 
     def reverse_engineering(self):
         """
@@ -187,13 +200,15 @@ class StarbucksProject():
         - Receive: 451 and 500
         - View: 512 and 520 
         - Buy: 541 and 620
+        (Also uploaded to S3 in order to avoid any loss of local data)
         """
-        if 'tcompleted_backup.csv' in os.listdir():
-            self.transcript_completed = pd.read_csv('tcompleted_backup.csv')
+        if 'tcompleted_backup.csv' in os.listdir('backup'):
+            self.transcript_completed = pd.read_csv('backup/tcompleted_backup.csv')
             print(self._status_function(family = "Processing Views", msg = "Back-up Retrieved"))
         else:
             self.transcript_completed = self.finding_view_time(self._query_data_transcript_completed, self._df_offer_viewed)
-            self.transcript_completed.to_csv('tcompleted_backup.csv', index = False)
+            self.transcript_completed.to_csv('backup/tcompleted_backup.csv', index = False)
+            self._s3.upload_file('backup/tcompleted_backup.csv', self.bucket, 'backup/tcompleted_backup.csv')
             print(self._status_function(family = "Processing Views", msg = "Offers Enrich Views Completed"))
 
     def finding_view_time(self, raw_dataset, views):
@@ -298,7 +313,9 @@ class StarbucksProject():
         Build the Transactional journey just filtering the main dataset
         """
         transcript_transactioned = self._df_transactioned.rename(columns = {'time': 'time_completion'})
-        transcript_transactioned[['time_receive', 'time_view', 'time_for_completion', 'time_for_view']] = None
+        transcript_transactioned['time_receive'] = transcript_transactioned['time_completion']
+        transcript_transactioned['time_view'] = transcript_transactioned['time_completion']
+        transcript_transactioned[['time_for_completion', 'time_for_view']] = 0
         transcript_transactioned['general_journey'] = 'transactioned'
         self.transcript_transactioned = transcript_transactioned[self.transcript_received.columns]
         print(self._status_function(family = "Processing Transaction", msg = "Building Transactional Table"))
@@ -316,14 +333,89 @@ class StarbucksProject():
                                   .merge(self.profile, on = 'customer_id', how = 'left')\
                                   .merge(self.portfolio, on = 'offer_id', how = 'left')
 
-        self.complete_table.to_csv('preprocessed_data.csv', index = False, sep = ';')
+        cols_zero = ['email', 'mobile', 'social', 'web', 'amount', 'reward', 'difficulty', 'duration']
+        cols_no_offer = ['offer_type', 'offer_id']
+        self.complete_table.loc[:, cols_zero] = self.complete_table.loc[:, cols_zero].fillna(0)
+        self.complete_table.loc[:, cols_no_offer] = self.complete_table.loc[:, cols_no_offer].fillna('no_offer')
+
         print(self._status_function(family = "Processing Datase", msg = "Building Gathered Table"))
+
+    def feature_engineering_enhanced(self, transactional_cycle = 7 * 24):
+        """
+        A feature to be evaluated will be the conversion of each offer type (including transactions). Two important steps/assumptions are done here:
+        1) In order to be able to measure a conversion for transaction, a lifecycle of it needs to be considered (default = 7 days = 168 hours);
+        (e.g. If I have a period greater than 168 hours without doing any transactions, it will be added as a miss opportunity, like an offer
+        that I have only received and not completed, so I don't have as conversion always 100 % for transactions);
+        2) As a cold start for conversion, that is set as 0.5 (50 %), in order to not bias the propensity of the first conversion.
+        """
+        # Definition of a transactional lifecycle in order to use as a feature transaction convertional, otherwise would be always 100 %
+        cols_for_cleaned_table = ['offer_type', 'gender', 'age', 'income', 'year', 'reward', 'difficulty', 'duration',\
+                                  'email', 'mobile', 'social', 'web', 'cr_bogo', 'cr_transactions', 'cr_discount', 'cr_informational', 'target']
+        self._tbl_enriched = None
+        n_clients = len(self.complete_table.customer_id.unique())
+        self.complete_table['succeed'] = self.complete_table[['time_view', 'time_completion', 'offer_type']]\
+                                             .apply(lambda x: self._check_completion(x[0], x[1], x[2]), axis = 1)
+        counter_keys = ['bogo', 'no_offer', 'discount', 'informational']
+
+        for nc, i in enumerate(self.complete_table.customer_id.unique()):
+
+            tbl = self.complete_table[self.complete_table.customer_id == i].sort_values(by = 'time_receive', ascending = True).copy()
+            tbl[['r_cnt_bogo', 'r_cnt_transaction', 'r_cnt_discount', 'r_cnt_informational']] = 0
+            tbl[['c_cnt_bogo', 'c_cnt_transaction', 'c_cnt_discount', 'c_cnt_informational']] = 0
+
+            if len(tbl) > 1:
+                for n, t in enumerate(tbl['time_receive'][1:]):
+                    dcounter = tbl[tbl['time_receive'] < t]['offer_type'].value_counts().to_dict()
+                    tbl.iloc[n+1, -8], tbl.iloc[n+1, -7], tbl.iloc[n+1, -6], tbl.iloc[n+1, -5] = \
+                        [dcounter.get(k, 0) if k != 'no_offer' else max(dcounter.get(k, 0), t//transactional_cycle) for k in counter_keys]
+
+                    dcounter = tbl[tbl['time_receive'] < t][['offer_type', 'succeed']].groupby('offer_type').sum().to_dict().get('succeed')
+                    tbl.iloc[n+1, -4], tbl.iloc[n+1, -3], tbl.iloc[n+1, -2], tbl.iloc[n+1, -1] = [dcounter.get(k, 0) for k in counter_keys]
+            else:
+                continue
+            print(f"Customers Processed: {nc+1}/{n_clients}", end = "\r")
+            if self._tbl_enriched is None:
+                self._tbl_enriched = tbl
+            else:
+                self._tbl_enriched = pd.concat([self._tbl_enriched, tbl], axis = 0)
+
+        self._tbl_enriched['cr_bogo'] = self._tbl_enriched[['r_cnt_bogo', 'c_cnt_bogo']].apply(\
+                                                            lambda x: np.clip(x[1]/x[0], a_min = 0, a_max = 1), axis = 1)
+
+        self._tbl_enriched['cr_transactions'] = self._tbl_enriched[['r_cnt_transaction', 'c_cnt_transaction']].apply(\
+                                                                            lambda x: np.clip(x[1]/x[0], a_min = 0, a_max = 1), axis = 1)
+
+        self._tbl_enriched['cr_discount'] = self._tbl_enriched[['r_cnt_discount', 'c_cnt_discount']].apply(\
+                                                                            lambda x: np.clip(x[1]/x[0], a_min = 0, a_max = 1), axis = 1)
+
+        self._tbl_enriched['cr_informational'] = self._tbl_enriched[['r_cnt_informational', 'c_cnt_informational']].apply(\
+                                                                            lambda x: np.clip(x[1]/x[0], a_min = 0, a_max = 1), axis = 1)
+
+        self._tbl_enriched[['cr_bogo', 'cr_transactions', 'cr_discount', 'cr_informational']] =\
+                self._tbl_enriched[['cr_bogo', 'cr_transactions', 'cr_discount', 'cr_informational']].fillna(0.5)
+
+        self._tbl_enriched.rename(columns = {'succeed': 'target'}, inplace = True)
+        self.tbl_enriched_cleaned = self._tbl_enriched[self._tbl_enriched['general_journey'] != 'transactioned'][cols_for_cleaned_table]
+
+    def call_feature_engineering_enhanced(self):
+        """
+        Calling "feature_engineering_enhanced()" only if it wasn't already calculated since it demands a bit of time to reprocess it.
+        (Also uploaded to S3 in order to avoid any loss of local data)
+        """
+        if 'feenhanced_backup.csv' in os.listdir('backup'):
+            self.tbl_enriched_cleaned = pd.read_csv('backup/feenhanced_backup.csv')
+            print(self._status_function(family = "Enhanced Feature Engineering", msg = "Back-up Retrieved"))
+        else:
+            self.feature_engineering_enhanced()
+            self.tbl_enriched_cleaned.to_csv('backup/feenhanced_backup.csv', index = False)
+            self._s3.upload_file('backup/feenhanced_backup.csv', self.bucket, 'backup/feenhanced_backup.csv')
+            print(self._status_function(family = "Enhanced Feature Engineering", msg = "Adding Conversion Data"))
 
     def fit_preprocess(self):
         """
         Save time and run all at once
         """
-        self.feature_engineering()
+        self.feature_engineering_basic()
         self.reverse_engineering()
         self.completed_query()
         self.processing_views()
@@ -332,6 +424,7 @@ class StarbucksProject():
         self.build_received_table()
         self.build_transactional_table()
         self.gathered_all_tables_fe()
+        self.call_feature_engineering_enhanced()
 
 
 if __name__ == '__main__':
