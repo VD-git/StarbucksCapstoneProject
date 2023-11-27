@@ -1,3 +1,6 @@
+import subprocess
+subprocess.call(['pip', 'install', 'lightgbm'])
+
 import pandas as pd
 import numpy as np
 import math
@@ -8,6 +11,15 @@ import os
 import logging
 import boto3
 import sagemaker
+import pickle
+
+from lightgbm import LGBMClassifier
+
+from sklearn.model_selection import (GridSearchCV, train_test_split)
+from sklearn.preprocessing import (MinMaxScaler, OneHotEncoder, StandardScaler)
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.compose import ColumnTransformer
 
 class StarbucksProject():
 
@@ -426,6 +438,85 @@ class StarbucksProject():
         self.gathered_all_tables_fe()
         self.call_feature_engineering_enhanced()
 
+    def fit_preprocess(self):
+        """
+        The pipeline of preprocessing step is done in this stage. The pipe is compose by 4 flows:
+        1) Handling the categorical data with one-hot-encoding;
+        2) Treating continuos data with standard scaler;
+        3) Handle discrete data with minmax scaler;
+        4) Data that needs no treatment.
+        By the end a preprocessor is saved for future use.
+        """
+        self._one_hot_scaler_cols = ['gender', 'year', 'offer_type']
+        self._standard_scaler_cols = ['income', 'age', 'cr_bogo', 'cr_transactions', 'cr_discount', 'cr_informational']
+        self._min_max_scaler_cols = ['reward', 'difficulty', 'duration']
+        self._passthrough_cols = ['email', 'mobile', 'social', 'web', 'target']
+
+        one_hot_scaler = Pipeline(\
+            steps = [('impute', SimpleImputer(strategy='most_frequent')),\
+                     ('encode', OneHotEncoder(sparse=False, handle_unknown='ignore'))])
+
+        standard_scaler = Pipeline(\
+            steps = [('impute', SimpleImputer(strategy='mean')),\
+                     ('encode', StandardScaler())])
+
+        min_max_scaler = Pipeline(\
+            steps = [('impute', SimpleImputer(strategy='most_frequent')),\
+                     ('encode', MinMaxScaler())])
+
+        self.preprocessor = ColumnTransformer(transformers=[\
+            ("categorical_transformation", one_hot_scaler, self._one_hot_scaler_cols),\
+            ("continuos_transformation", standard_scaler, self._standard_scaler_cols),\
+            ("discrete_normalization", min_max_scaler, self._min_max_scaler_cols)], remainder = 'passthrough')
+
+        X, y = self.tbl_enriched_cleaned.drop(['target'], axis = 1), self.tbl_enriched_cleaned.target
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size = 0.25, stratify = y)
+
+        self.preprocessor.fit(self.X_train)
+        self.tbl_enriched_cleaned_preprocess = self.preprocessor.transform(self.tbl_enriched_cleaned)
+        pickle.dump(self.preprocessor, open('backup/preprocessor.pkl', 'wb'))
+        self._s3.upload_file('backup/preprocessor.pkl', self.bucket, 'backup/preprocessor.pkl')
+        print(self._status_function(family = "Preprocessor", msg = "Generating Preprocessor"))
+
+    def model_architecture_tuned(self):
+        """
+        The model is tuned here through GridSearch with cross validation in order to find the best hyperparameters to be used.
+        """
+        self.X_train_preprocessed = self.preprocessor.transform(self.X_train)
+        self.X_test_preprocessed = self.preprocessor.transform(self.X_test)
+        LGBM = LGBMClassifier(verbose=-1)
+        param_grid = {
+            'learning_rate': [0.01, 0.1, 0.25],
+            'n_estimators': [100, 200, 300],
+            'num_leaves': [20, 40, 80],
+        }
+        self.lgbm_tuned = GridSearchCV(
+            estimator = LGBM,
+            param_grid = param_grid,
+            scoring = 'accuracy',
+            cv = 3,
+            verbose = 0
+        )
+        self.lgbm_tuned.fit(self.X_train_preprocessed, self.y_train)
+        pickle.dump(self.lgbm_tuned, open('backup/model.pkl', 'wb'))
+        self._s3.upload_file('backup/model.pkl', self.bucket, 'backup/model.pkl')
+        self.best_params = self.lgbm_tuned.best_params_
+        self.best_model = self.lgbm_tuned.best_estimator_
+        print(self._status_function(family = "Tuning", msg = "Gridsearch on the Model"))
+
+    def call_model_architecture_tuned(self):
+        """
+        Training of the preprocessor and the model is called here with they are not find in the backup folder.
+        """
+        if 'model.pkl' in os.listdir('backup') and 'preprocessor.pkl' in os.listdir('backup'):
+            with open('backup/preprocessor.pkl', 'rb') as preprocessor:
+                self.preprocessor = pickle.load(preprocessor)
+            with open('backup/model.pkl', 'rb') as model:
+                self.lgbm_tuned = pickle.load(model)
+            print(self._status_function(family = "Tuning", msg = "Model and Preprocessor Back-up Retrieved"))
+        else:
+            self.fit_preprocess()
+            self.model_architecture_tuned()
 
 if __name__ == '__main__':
 
