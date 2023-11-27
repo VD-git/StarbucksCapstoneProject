@@ -536,6 +536,7 @@ class StarbucksProject():
 
     def full_pipeline(self):
         """
+        It connects the part of the processor with the model itself in order to do only one deployment for generating the endpoint.
         """
         if 'process_model_pipeline.pkl' in os.listdir('backup'):
             with open('backup/process_model_pipeline.pkl', 'rb') as process_model_pipeline:
