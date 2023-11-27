@@ -1,5 +1,6 @@
 import subprocess
 subprocess.call(['pip', 'install', 'lightgbm'])
+subprocess.call(['pip', 'install', 'sagemaker'])
 
 import pandas as pd
 import numpy as np
@@ -12,6 +13,9 @@ import logging
 import boto3
 import sagemaker
 import pickle
+import tarfile
+import joblib
+import argparse
 
 from lightgbm import LGBMClassifier
 
@@ -36,6 +40,12 @@ class StarbucksProject():
         self.role = sagemaker.get_execution_role()
         self.bucket = self._session.default_bucket()
         self.region = self._session.boto_region_name
+        self.framework_version = "0.23-1"
+        self.training_image_uri = sagemaker.image_uris.retrieve(\
+                                framework = "sklearn",\
+                                region = self.region,\
+                                version = self.framework_version,\
+                                py_version="py3")
         self._transcript_completed_query = '''
             WITH TMP_DATA AS (
                 SELECT *,
@@ -160,20 +170,20 @@ class StarbucksProject():
         self.profile['day'] = self.profile.became_member_on.apply(lambda x: x%100)
         self.profile.drop(['became_member_on'], inplace = True, axis = 1)
         self.profile.rename(columns = {'id': 'customer_id'}, inplace = True)
-        print(self._status_function(family = "Basic Feature Engineering", msg = "Profile"))
+        logging.info(self._status_function(family = "Basic Feature Engineering", msg = "Profile"))
 
         self.transcript['amount'] = self.transcript.value.apply(lambda x: x.get('amount', None))
         self.transcript['offer_id'] = self.transcript.value.apply(lambda x: x.get('offer_id', None) if 'offer_id' in x.keys() else x.get('offer id', None))
         self.transcript['premium'] = self.transcript.value.apply(lambda x: x.get('reward', None))
         self.transcript.drop(['value'], inplace = True, axis = 1)
         self.transcript.rename(columns = {'person': 'customer_id'}, inplace = True)
-        print(self._status_function(family = "Basic Feature Engineering", msg = "Transcript"))
+        logging.info(self._status_function(family = "Basic Feature Engineering", msg = "Transcript"))
 
         channels = pd.get_dummies(self.portfolio.channels.apply(pd.Series).stack()).sum(level=0)
         self.portfolio = pd.concat([self.portfolio, channels], axis=1).drop(['channels'], axis = 1)
         self.portfolio.rename(columns = {'id': 'offer_id'}, inplace = True)
         self.portfolio.duration = self.portfolio.duration.apply(lambda x: x * 24)
-        print(self._status_function(family = "Basic Feature Engineering", msg = "Portfolio"))
+        logging.info(self._status_function(family = "Basic Feature Engineering", msg = "Portfolio"))
 
     def reverse_engineering(self):
         """
@@ -192,7 +202,7 @@ class StarbucksProject():
         self._df_offer_viewed = gathered_table[gathered_table['event'] == 'offer viewed'][['customer_id', 'time', 'offer_id']]
         self._df_transactioned = gathered_table[gathered_table['event'] == 'transaction'][['customer_id', 'time', 'offer_id', 'amount']]
         self._df_offer_received['time_limit'] = self._df_offer_received['time'] + self._df_offer_received['duration']
-        print(self._status_function(family = "Reverse Engineering", msg = "Transactions"))
+        logging.info(self._status_function(family = "Reverse Engineering", msg = "Transactions"))
 
     def completed_query(self):
         """
@@ -202,7 +212,7 @@ class StarbucksProject():
         self._df_offer_completed.to_sql('doc', self._conn, index=False)
 
         self._query_data_transcript_completed = pd.read_sql_query(self._transcript_completed_query, self._conn)
-        print(self._status_function(family = "Build Query", msg = "Offers Completed"))
+        logging.info(self._status_function(family = "Build Query", msg = "Offers Completed"))
 
     def processing_views(self):
         """
@@ -216,12 +226,12 @@ class StarbucksProject():
         """
         if 'tcompleted_backup.csv' in os.listdir('backup'):
             self.transcript_completed = pd.read_csv('backup/tcompleted_backup.csv')
-            print(self._status_function(family = "Processing Views", msg = "Back-up Retrieved"))
+            logging.info(self._status_function(family = "Processing Views", msg = "Back-up Retrieved"))
         else:
             self.transcript_completed = self.finding_view_time(self._query_data_transcript_completed, self._df_offer_viewed)
             self.transcript_completed.to_csv('backup/tcompleted_backup.csv', index = False)
             self._s3.upload_file('backup/tcompleted_backup.csv', self.bucket, 'backup/tcompleted_backup.csv')
-            print(self._status_function(family = "Processing Views", msg = "Offers Enrich Views Completed"))
+            logging.info(self._status_function(family = "Processing Views", msg = "Offers Enrich Views Completed"))
 
     def finding_view_time(self, raw_dataset, views):
         """
@@ -268,7 +278,7 @@ class StarbucksProject():
         self.transcript_completed = self.transcript_completed.merge(monetary_values, \
                                                           on = ['customer_id', 'offer_id', 'time_completion'], \
                                                           how = 'left')
-        print(self._status_function(family = "Processing Completed", msg = "Adding Amount Value"))
+        logging.info(self._status_function(family = "Processing Completed", msg = "Adding Amount Value"))
 
     def build_received_viewed_table(self):
         """
@@ -298,7 +308,7 @@ class StarbucksProject():
         self._only_view.to_sql('dov2', self._conn, index=False)
         self._only_receive.to_sql('dor2', self._conn, index=False)
         self.transcript_viewed= pd.read_sql_query(self._transcript_view_query, self._conn)
-        print(self._status_function(family = "Processing Views", msg = "Building Views Table"))
+        logging.info(self._status_function(family = "Processing Views", msg = "Building Views Table"))
 
     def build_received_table(self):
         """
@@ -318,7 +328,7 @@ class StarbucksProject():
         self.transcript_received[['time_view', 'time_completion', 'time_for_completion', 'time_for_view']] = None
         self.transcript_received['general_journey'] = 'offer_received'
         self.transcript_received['amount'] = None
-        print(self._status_function(family = "Processing Receive", msg = "Building Receive Table"))
+        logging.info(self._status_function(family = "Processing Receive", msg = "Building Receive Table"))
 
     def build_transactional_table(self):
         """
@@ -330,7 +340,7 @@ class StarbucksProject():
         transcript_transactioned[['time_for_completion', 'time_for_view']] = 0
         transcript_transactioned['general_journey'] = 'transactioned'
         self.transcript_transactioned = transcript_transactioned[self.transcript_received.columns]
-        print(self._status_function(family = "Processing Transaction", msg = "Building Transactional Table"))
+        logging.info(self._status_function(family = "Processing Transaction", msg = "Building Transactional Table"))
 
     def gathered_all_tables_fe(self):
         """
@@ -350,7 +360,7 @@ class StarbucksProject():
         self.complete_table.loc[:, cols_zero] = self.complete_table.loc[:, cols_zero].fillna(0)
         self.complete_table.loc[:, cols_no_offer] = self.complete_table.loc[:, cols_no_offer].fillna('no_offer')
 
-        print(self._status_function(family = "Processing Datase", msg = "Building Gathered Table"))
+        logging.info(self._status_function(family = "Processing Datase", msg = "Building Gathered Table"))
 
     def feature_engineering_enhanced(self, transactional_cycle = 7 * 24):
         """
@@ -416,12 +426,12 @@ class StarbucksProject():
         """
         if 'feenhanced_backup.csv' in os.listdir('backup'):
             self.tbl_enriched_cleaned = pd.read_csv('backup/feenhanced_backup.csv')
-            print(self._status_function(family = "Enhanced Feature Engineering", msg = "Back-up Retrieved"))
+            logging.info(self._status_function(family = "Enhanced Feature Engineering", msg = "Back-up Retrieved"))
         else:
             self.feature_engineering_enhanced()
             self.tbl_enriched_cleaned.to_csv('backup/feenhanced_backup.csv', index = False)
             self._s3.upload_file('backup/feenhanced_backup.csv', self.bucket, 'backup/feenhanced_backup.csv')
-            print(self._status_function(family = "Enhanced Feature Engineering", msg = "Adding Conversion Data"))
+            logging.info(self._status_function(family = "Enhanced Feature Engineering", msg = "Adding Conversion Data"))
 
     def fit_etl(self):
         """
@@ -476,7 +486,10 @@ class StarbucksProject():
         self.tbl_enriched_cleaned_preprocess = self.preprocessor.transform(self.tbl_enriched_cleaned)
         pickle.dump(self.preprocessor, open('backup/preprocessor.pkl', 'wb'))
         self._s3.upload_file('backup/preprocessor.pkl', self.bucket, 'backup/preprocessor.pkl')
-        print(self._status_function(family = "Preprocessor", msg = "Generating Preprocessor"))
+        with tarfile.open('backup/preprocessor.tar.gz', 'w:gz') as tar:
+            tar.add('backup/preprocessor.pkl', arcname=os.path.basename('backup/preprocessor.pkl'))
+        self._s3.upload_file('backup/preprocessor.tar.gz', self.bucket, 'backup/preprocessor.tar.gz')
+        logging.info(self._status_function(family = "Preprocessor", msg = "Generating Preprocessor"))
 
     def model_architecture_tuned(self):
         """
@@ -500,9 +513,12 @@ class StarbucksProject():
         self.lgbm_tuned.fit(self.X_train_preprocessed, self.y_train)
         pickle.dump(self.lgbm_tuned, open('backup/model.pkl', 'wb'))
         self._s3.upload_file('backup/model.pkl', self.bucket, 'backup/model.pkl')
+        with tarfile.open('backup/model.tar.gz', 'w:gz') as tar:
+            tar.add('backup/model.pkl', arcname=os.path.basename('backup/model.pkl'))
+        self._s3.upload_file('backup/model.tar.gz', self.bucket, 'backup/model.tar.gz')
         self.best_params = self.lgbm_tuned.best_params_
         self.best_model = self.lgbm_tuned.best_estimator_
-        print(self._status_function(family = "Tuning", msg = "Gridsearch on the Model"))
+        logging.info(self._status_function(family = "Tuning", msg = "Gridsearch on the Model"))
 
     def call_model_architecture_tuned(self):
         """
@@ -513,12 +529,63 @@ class StarbucksProject():
                 self.preprocessor = pickle.load(preprocessor)
             with open('backup/model.pkl', 'rb') as model:
                 self.lgbm_tuned = pickle.load(model)
-            print(self._status_function(family = "Tuning", msg = "Model and Preprocessor Back-up Retrieved"))
+            logging.info(self._status_function(family = "Tuning", msg = "Model and Preprocessor Back-up Retrieved"))
         else:
             self.fit_preprocess()
             self.model_architecture_tuned()
 
-if __name__ == '__main__':
+    def full_pipeline(self):
+        """
+        """
+        if 'process_model_pipeline.pkl' in os.listdir('backup'):
+            with open('backup/process_model_pipeline.pkl', 'rb') as process_model_pipeline:
+                self.process_model_pipeline = pickle.load(process_model_pipeline)
+            logging.info(self._status_function(family = "Pipeline", msg = "Pipeline Back-up Retrieved (Processor + Model)"))
+        else:
+            self.process_model_pipeline = Pipeline(steps = [('preprocessor', self.preprocessor),\
+                                                            ('model_tuned', self.lgbm_tuned)])
+            pickle.dump(self.process_model_pipeline, open('backup/process_model_pipeline.pkl', 'wb'))
+            self._s3.upload_file('backup/process_model_pipeline.pkl', self.bucket, 'backup/process_model_pipeline.pkl')
+            with tarfile.open('backup/process_model_pipeline.tar.gz', 'w:gz') as tar:
+                tar.add('backup/process_model_pipeline.pkl', arcname=os.path.basename('backup/process_model_pipeline.pkl'))
+            self._s3.upload_file('backup/process_model_pipeline.tar.gz', self.bucket, 'backup/process_model_pipeline.tar.gz')
+            logging.info(self._status_function(family = "Pipeline", msg = "Pipeline Completed (Processor + Model)"))
+
+
+def model_fn(model_dir):
+    """
+    Function that is necessary for calling the model by the time of deployment and creating the endpoint on the notebook.
+    (Note that the function is not inside the class)
+    """
+    with open(os.path.join(model_dir, "process_model_pipeline.pkl"), "rb") as f:
+        model = pickle.load(f)
+    return model
+
+
+def save_model(model, model_dir):
+    """
+    Saves the model in the container environment folder by the time of deployment.
+    (Note that the function is not inside the class)
+    """
+    path = os.path.join(model_dir, "process_model_pipeline.pkl")
+    pickle.dump(model, open(path, 'wb'))
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+
+    # Container environment
+    parser.add_argument("--hosts", type=list, default=json.loads(os.environ["SM_HOSTS"]))
+    parser.add_argument("--current-host", type=str, default=os.environ["SM_CURRENT_HOST"])
+    parser.add_argument("--model-dir", type=str, default=os.environ["SM_MODEL_DIR"])
+    parser.add_argument("--data-dir", type=str, default=os.environ["SM_CHANNEL_TRAINING"])
+    parser.add_argument("--num-gpus", type=int, default=os.environ["SM_NUM_GPUS"])
 
     SP = StarbucksProject()
+    SP.fit_etl()
     SP.fit_preprocess()
+    SP.call_model_architecture_tuned()
+    SP.full_pipeline()
+
+    save_model(SP.process_model_pipeline, parser.parse_args().model_dir)
