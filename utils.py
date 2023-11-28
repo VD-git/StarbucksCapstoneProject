@@ -759,6 +759,9 @@ class StarbucksProject():
             min_value = aggregating_table_grouped[aggregating_table_grouped['flag'] == 1]['min'].min()
             self.business_table[i] = min_value
 
+    def application_business_rules(self):
+        continue
+
 
 def model_fn(model_dir):
     """
