@@ -1,6 +1,7 @@
 import subprocess
 subprocess.call(['pip', 'install', 'lightgbm'])
 subprocess.call(['pip', 'install', 'sagemaker'])
+subprocess.call(['pip', 'install', 'ydata_profiling'])
 
 import pandas as pd
 import numpy as np
@@ -16,6 +17,10 @@ import pickle
 import tarfile
 import joblib
 import argparse
+import matplotlib.pyplot as plt
+
+from ydata_profiling import ProfileReport
+import shap
 
 from lightgbm import LGBMClassifier
 
@@ -24,6 +29,8 @@ from sklearn.preprocessing import (MinMaxScaler, OneHotEncoder, StandardScaler)
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
+from sklearn.metrics import (accuracy_score, auc, confusion_matrix, ConfusionMatrixDisplay, f1_score, jaccard_score, precision_score,\
+                             precision_recall_curve, recall_score, roc_auc_score, roc_curve)
 
 class StarbucksProject():
 
@@ -46,6 +53,9 @@ class StarbucksProject():
                                 region = self.region,\
                                 version = self.framework_version,\
                                 py_version="py3")
+        self.thresh_params = {'bogo': 0.50,
+                              'discount': 0.50,
+                              'informational': 0.50}
         self._transcript_completed_query = '''
             WITH TMP_DATA AS (
                 SELECT *,
@@ -433,6 +443,9 @@ class StarbucksProject():
             self._s3.upload_file('backup/feenhanced_backup.csv', self.bucket, 'backup/feenhanced_backup.csv')
             logging.info(self._status_function(family = "Enhanced Feature Engineering", msg = "Adding Conversion Data"))
 
+    def processing_eda_on_clean_data(self):
+        return ProfileReport(self.tbl_enriched_cleaned)
+
     def fit_etl(self):
         """
         Save time and run all at once
@@ -551,6 +564,200 @@ class StarbucksProject():
                 tar.add('backup/process_model_pipeline.pkl', arcname=os.path.basename('backup/process_model_pipeline.pkl'))
             self._s3.upload_file('backup/process_model_pipeline.tar.gz', self.bucket, 'backup/process_model_pipeline.tar.gz')
             logging.info(self._status_function(family = "Pipeline", msg = "Pipeline Completed (Processor + Model)"))
+
+    def custom_predict(self, X):
+        """
+        Custom predict function with the threshold set in threshold_iteration_tuning or manually set
+        [Default Setting] self.thresh_params = {'bogo': 0.50, 'discount': 0.50, 'informational': 0.50}
+        It can be manually changed directly through the attribute thresh_params from the class
+        """
+        proba_n_types = pd.concat([X.offer_type.reset_index().drop(['index'], axis = 1),\
+                                   pd.DataFrame(self.process_model_pipeline.predict_proba(X)[:, 1],\
+                                                columns = ['proba'])\
+                                  ], axis=1)
+        custom_output = proba_n_types.apply(
+                         lambda x: 1 if self.thresh_params.get(x[0]) <= x[1] else 0,
+                         axis=1
+                                           ).values
+        return custom_output
+
+    def threshold_iteration_tuning(self, step = 0.01, mode_type = 'accuracy'):
+        """
+        Another feature of this class is that it is feasible to tune the threshold for each offer_type seeking maximizing
+        the accuracy.
+        Metrics Available: 'accuracy' (default), 'f1_score', 'jaccard_score'.
+        """
+        assert mode_type in ['accuracy', 'f1_score', 'jaccard_score'], "Select a valid metric for tuning."
+        self.thresh_evaluation = {}
+        for i in self.X_train.offer_type.unique():
+            best_usecase = [i, 0, 0] 
+            X_filtered = self.X_train[self.X_train.offer_type == i]
+            y_train = self.y_train[self.y_train.index.isin(X_filtered.index)]
+            for j in np.arange(0, 1+step, step):
+                self.thresh_params[i] = j
+                y_pred_custom = self.custom_predict(X_filtered)
+
+                if mode_type == 'accuracy':
+                    metric_custom = round(accuracy_score(y_train, y_pred_custom), 4)
+                elif mode_type == 'f1_score':
+                    metric_custom = round(f1_score(y_train, y_pred_custom), 4)
+                else:
+                    metric_custom = round(jaccard_score(y_train, y_pred_custom), 4)
+
+                if best_usecase[2] <= metric_custom:
+                    best_usecase[1], best_usecase[2] = j, metric_custom
+            self.thresh_evaluation[i] = {'step': best_usecase[1], 'value': best_usecase[2]}
+
+        self.thresh_params['bogo'] = self.thresh_evaluation.get('bogo').get('step')
+        self.thresh_params['discount'] = self.thresh_evaluation.get('discount').get('step')
+        self.thresh_params['informational'] = self.thresh_evaluation.get('informational').get('step')
+
+        return self.thresh_evaluation
+
+    def model_evaluation_metrics(self, custom:bool):
+        """
+        Most of the model evaluation is done through here. Since it is a classification problem, the metrics that
+        were measured are regarding it and a table is generated from it.
+        Futhermore, 3 main images are generated for each offer_type and general case.
+        - Confusion Matrix;
+        - ROC-AUC Curve;
+        - Precision-Recall Curve.
+        It is possible to select custom = True, with that selected, the metrics generates are measure considering
+        the custom threshold that is created through threshold_iteration_tuning.s
+        """
+        tmp_metrics_gathered = None
+
+        def fig_confusion_matrix(y_true, y_pred, section):
+            cm = ConfusionMatrixDisplay.from_predictions(y_true, y_pred, cmap = 'Greens');
+            plt.title(f'confusion matrix - {section}');
+            cm.figure_.savefig(f'images/confusion_matrix_{i}.png')
+
+        def fig_roc_auc_curve(y_true, y_pred, section):
+            roc_auc = roc_auc_score(y_true, y_pred)
+            fpr, tpr, _ = roc_curve(y_true, y_pred)
+
+            fig = plt.figure()
+            plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = {:.2f})'.format(roc_auc))
+            plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+            plt.xlabel('False Positive Rate')
+            plt.ylabel('True Positive Rate')
+            plt.title(f'ROC curve - {section}')
+            plt.legend(loc='lower right')
+            plt.show()
+            fig.savefig(f'images/roc_auc_curve_{section}.png')
+
+        def fig_precision_recall_curve(y_true, y_pred, section):
+            precision, recall, _ = precision_recall_curve(y_true, y_pred)
+            fig = plt.figure()
+            plt.step(recall, precision, color='b', alpha=0.2, where='post')
+            plt.fill_between(recall, precision, step='post', alpha=0.2, color='b')
+            plt.xlabel('Recall')
+            plt.ylabel('Precision')
+            plt.title(f'precision-recall curve - {section}')
+            plt.show()
+            fig.savefig(f'images/precision_recall_curve_{section}.png')
+
+        def measuring_basic_metrics(y_test, y_pred):
+            cmatrix = confusion_matrix(y_test, y_pred)
+            metrics = {
+                'accuracy': round(accuracy_score(y_test, y_pred), 4),
+                'precision': round(precision_score(y_test, y_pred), 4),
+                'recall': round(recall_score(y_test, y_pred), 4),
+                'f1_score': round(f1_score(y_test, y_pred), 4),
+                'jaccard_score': round(jaccard_score(y_test, y_pred), 4),
+                'specificity': round((cmatrix[0, 0] / (cmatrix[0, 0] + cmatrix[0, 1])), 4),
+                'false_positive_rate': round((cmatrix[0, 1] / (cmatrix[0, 1] + cmatrix[0, 0])), 4),
+                'false_negative_rate': round((1 - recall_score(y_test, y_pred)), 4)
+            }
+            tmp_metrics = pd.DataFrame(index=metrics.keys(), data=metrics.values(), columns=['value'])\
+                            .reset_index()\
+                            .rename(columns={'index': 'metric'})
+            return tmp_metrics
+
+        for i in self.X_test.offer_type.unique():
+            tmp_metrics = None
+            X_filtered = self.X_test[self.X_test.offer_type == i]
+            y_test = self.y_test[self.y_test.index.isin(X_filtered.index)]
+            y_pred = self.custom_predict(X_filtered) if custom else self.process_model_pipeline.predict(X_filtered)
+
+            tmp_metrics = measuring_basic_metrics(y_test, y_pred)
+            tmp_metrics['offer_type'] = i
+            fig_confusion_matrix(y_test, y_pred, i)
+
+            X_filtered = self.X_train[self.X_train.offer_type == i]
+            y_train = self.y_train[self.y_train.index.isin(X_filtered.index)]
+            y_pred = self.custom_predict(X_filtered) if custom else self.process_model_pipeline.predict(X_filtered)
+            fig_roc_auc_curve(y_train, y_pred, i)
+            fig_precision_recall_curve(y_train, y_pred, i)
+
+            if tmp_metrics is None:
+                tmp_metrics_gathered = tmp_metrics
+            else:
+                tmp_metrics_gathered = pd.concat([tmp_metrics_gathered, tmp_metrics], axis = 0)
+
+        y_test = self.y_test
+        y_pred = self.custom_predict(self.X_test) if custom else self.process_model_pipeline.predict(self.X_test)
+        tmp_metrics = measuring_basic_metrics(y_test, y_pred)
+        tmp_metrics['offer_type'] = 'all_offers'
+        fig_confusion_matrix(y_test, y_pred, 'all_offers')
+        tmp_metrics_gathered = pd.concat([tmp_metrics_gathered, tmp_metrics], axis = 0)
+
+        y_train = self.y_train
+        y_pred = self.custom_predict(self.X_train) if custom else self.process_model_pipeline.predict(self.X_train)
+        fig_roc_auc_curve(y_train, y_pred, 'all_offers')
+        fig_precision_recall_curve(y_train, y_pred, 'all_offers')
+
+        return pd.pivot_table(tmp_metrics_gathered, values="value", index=["metric"], columns=["offer_type"])
+
+    def plot_shap(self, n_samples = 100):
+        """
+        Plot of the SHAP summary in order to check the importance of features, in order to interpret the problem.
+        Besides that, it is possible to perform feature selection through it. Mainly to see if it is feasible to
+        drop any variable non significant, simplifying the problem itself.
+        """
+        if n_samples > 100:
+            print("[WARNING] Values greater than 100 can spend a considerable amount of memory and time.")
+
+        def model_predict(data_asarray):
+            data_asframe = pd.DataFrame(data_asarray, columns=list(self.X_train.columns))
+            return self.process_model_pipeline.predict_proba(data_asframe)
+
+        shap.initjs()
+        train_sample, test_sample = self.X_train.sample(n_samples), self.X_test.sample(n_samples)
+        shap_kernel_explainer = shap.KernelExplainer(model_predict, train_sample)
+        shap_values_single = shap_kernel_explainer.shap_values(test_sample)
+        shap.summary_plot(np.array(shap_values_single[0]), test_sample, plot_type = 'bar')
+
+    def business_rules(self):
+        """
+        Business rules are here applied, the 4 most variables were selected by the feature importance evaluation in
+        order to make simple filters, every variable has a condition that raises a flag, like, income above 70k, or
+        offered through social, a specific year that has started the membership, or a x amount of reward.
+        - People that have 2 flags or more raised will be set as buyer;
+        - People with 1 or no flags raised will bet set as non-buyer.
+        """
+        self.business_table = {}
+        categorical_variables = ['reward', 'year', 'social']
+        continuos_variables = ['income']
+        for i in categorical_variables:
+            aggregating_table = self.tbl_enriched_cleaned[[i, 'offer_type', 'target']]\
+                                    .groupby(['offer_type', i])\
+                                    .mean()\
+                                    .apply(lambda x: 1 if x[-1] >= 0.50 else 0.00, axis = 1)\
+                                    .reset_index()\
+                                    .rename(columns={0: 'flag'})
+            self.business_table[i] = {}
+            for offer in aggregating_table['offer_type'].unique():
+                self.business_table[i][offer] = {int(k):int(v) for (k,v) in zip(aggregating_table[i].values, aggregating_table.flag.values)}
+        for i in continuos_variables:
+            aggregating_table = self.tbl_enriched_cleaned[[i, 'target']]
+            aggregating_table['quantile'] = pd.qcut(aggregating_table[i], q=3, labels=False) + 1
+            aggregating_table_grouped = aggregating_table.groupby(['quantile']).agg({'income': [min, max], 'target': np.mean}).reset_index()
+            aggregating_table_grouped.columns = ['quantile', 'min', 'max', 'flag']
+            aggregating_table_grouped['flag'] = aggregating_table_grouped['flag'].apply(lambda x: 1 if x >= 0.50 else 0.00)
+            aggregating_table_grouped.drop(['quantile'], axis = 1, inplace = True)
+            min_value = aggregating_table_grouped[aggregating_table_grouped['flag'] == 1]['min'].min()
+            self.business_table[i] = min_value
 
 
 def model_fn(model_dir):
