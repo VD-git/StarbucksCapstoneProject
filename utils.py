@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 
 from ydata_profiling import ProfileReport
 import shap
+from pandas.plotting import table
 
 from lightgbm import LGBMClassifier
 
@@ -180,20 +181,20 @@ class StarbucksProject():
         self.profile['day'] = self.profile.became_member_on.apply(lambda x: x%100)
         self.profile.drop(['became_member_on'], inplace = True, axis = 1)
         self.profile.rename(columns = {'id': 'customer_id'}, inplace = True)
-        logging.info(self._status_function(family = "Basic Feature Engineering", msg = "Profile"))
+        print(self._status_function(family = "Basic Feature Engineering", msg = "Profile"))
 
         self.transcript['amount'] = self.transcript.value.apply(lambda x: x.get('amount', None))
         self.transcript['offer_id'] = self.transcript.value.apply(lambda x: x.get('offer_id', None) if 'offer_id' in x.keys() else x.get('offer id', None))
         self.transcript['premium'] = self.transcript.value.apply(lambda x: x.get('reward', None))
         self.transcript.drop(['value'], inplace = True, axis = 1)
         self.transcript.rename(columns = {'person': 'customer_id'}, inplace = True)
-        logging.info(self._status_function(family = "Basic Feature Engineering", msg = "Transcript"))
+        print(self._status_function(family = "Basic Feature Engineering", msg = "Transcript"))
 
         channels = pd.get_dummies(self.portfolio.channels.apply(pd.Series).stack()).sum(level=0)
         self.portfolio = pd.concat([self.portfolio, channels], axis=1).drop(['channels'], axis = 1)
         self.portfolio.rename(columns = {'id': 'offer_id'}, inplace = True)
         self.portfolio.duration = self.portfolio.duration.apply(lambda x: x * 24)
-        logging.info(self._status_function(family = "Basic Feature Engineering", msg = "Portfolio"))
+        print(self._status_function(family = "Basic Feature Engineering", msg = "Portfolio"))
 
     def reverse_engineering(self):
         """
@@ -212,7 +213,7 @@ class StarbucksProject():
         self._df_offer_viewed = gathered_table[gathered_table['event'] == 'offer viewed'][['customer_id', 'time', 'offer_id']]
         self._df_transactioned = gathered_table[gathered_table['event'] == 'transaction'][['customer_id', 'time', 'offer_id', 'amount']]
         self._df_offer_received['time_limit'] = self._df_offer_received['time'] + self._df_offer_received['duration']
-        logging.info(self._status_function(family = "Reverse Engineering", msg = "Transactions"))
+        print(self._status_function(family = "Reverse Engineering", msg = "Transactions"))
 
     def completed_query(self):
         """
@@ -222,7 +223,7 @@ class StarbucksProject():
         self._df_offer_completed.to_sql('doc', self._conn, index=False)
 
         self._query_data_transcript_completed = pd.read_sql_query(self._transcript_completed_query, self._conn)
-        logging.info(self._status_function(family = "Build Query", msg = "Offers Completed"))
+        print(self._status_function(family = "Build Query", msg = "Offers Completed"))
 
     def processing_views(self):
         """
@@ -236,12 +237,12 @@ class StarbucksProject():
         """
         if 'tcompleted_backup.csv' in os.listdir('backup'):
             self.transcript_completed = pd.read_csv('backup/tcompleted_backup.csv')
-            logging.info(self._status_function(family = "Processing Views", msg = "Back-up Retrieved"))
+            print(self._status_function(family = "Processing Views", msg = "Back-up Retrieved"))
         else:
             self.transcript_completed = self.finding_view_time(self._query_data_transcript_completed, self._df_offer_viewed)
             self.transcript_completed.to_csv('backup/tcompleted_backup.csv', index = False)
             self._s3.upload_file('backup/tcompleted_backup.csv', self.bucket, 'backup/tcompleted_backup.csv')
-            logging.info(self._status_function(family = "Processing Views", msg = "Offers Enrich Views Completed"))
+            print(self._status_function(family = "Processing Views", msg = "Offers Enrich Views Completed"))
 
     def finding_view_time(self, raw_dataset, views):
         """
@@ -288,7 +289,7 @@ class StarbucksProject():
         self.transcript_completed = self.transcript_completed.merge(monetary_values, \
                                                           on = ['customer_id', 'offer_id', 'time_completion'], \
                                                           how = 'left')
-        logging.info(self._status_function(family = "Processing Completed", msg = "Adding Amount Value"))
+        print(self._status_function(family = "Processing Completed", msg = "Adding Amount Value"))
 
     def build_received_viewed_table(self):
         """
@@ -318,7 +319,7 @@ class StarbucksProject():
         self._only_view.to_sql('dov2', self._conn, index=False)
         self._only_receive.to_sql('dor2', self._conn, index=False)
         self.transcript_viewed= pd.read_sql_query(self._transcript_view_query, self._conn)
-        logging.info(self._status_function(family = "Processing Views", msg = "Building Views Table"))
+        print(self._status_function(family = "Processing Views", msg = "Building Views Table"))
 
     def build_received_table(self):
         """
@@ -338,7 +339,7 @@ class StarbucksProject():
         self.transcript_received[['time_view', 'time_completion', 'time_for_completion', 'time_for_view']] = None
         self.transcript_received['general_journey'] = 'offer_received'
         self.transcript_received['amount'] = None
-        logging.info(self._status_function(family = "Processing Receive", msg = "Building Receive Table"))
+        print(self._status_function(family = "Processing Receive", msg = "Building Receive Table"))
 
     def build_transactional_table(self):
         """
@@ -350,7 +351,7 @@ class StarbucksProject():
         transcript_transactioned[['time_for_completion', 'time_for_view']] = 0
         transcript_transactioned['general_journey'] = 'transactioned'
         self.transcript_transactioned = transcript_transactioned[self.transcript_received.columns]
-        logging.info(self._status_function(family = "Processing Transaction", msg = "Building Transactional Table"))
+        print(self._status_function(family = "Processing Transaction", msg = "Building Transactional Table"))
 
     def gathered_all_tables_fe(self):
         """
@@ -370,7 +371,7 @@ class StarbucksProject():
         self.complete_table.loc[:, cols_zero] = self.complete_table.loc[:, cols_zero].fillna(0)
         self.complete_table.loc[:, cols_no_offer] = self.complete_table.loc[:, cols_no_offer].fillna('no_offer')
 
-        logging.info(self._status_function(family = "Processing Datase", msg = "Building Gathered Table"))
+        print(self._status_function(family = "Processing Dataset", msg = "Building Gathered Table"))
 
     def feature_engineering_enhanced(self, transactional_cycle = 7 * 24):
         """
@@ -436,12 +437,12 @@ class StarbucksProject():
         """
         if 'feenhanced_backup.csv' in os.listdir('backup'):
             self.tbl_enriched_cleaned = pd.read_csv('backup/feenhanced_backup.csv')
-            logging.info(self._status_function(family = "Enhanced Feature Engineering", msg = "Back-up Retrieved"))
+            print(self._status_function(family = "Enhanced Feature Engineering", msg = "Back-up Retrieved"))
         else:
             self.feature_engineering_enhanced()
             self.tbl_enriched_cleaned.to_csv('backup/feenhanced_backup.csv', index = False)
             self._s3.upload_file('backup/feenhanced_backup.csv', self.bucket, 'backup/feenhanced_backup.csv')
-            logging.info(self._status_function(family = "Enhanced Feature Engineering", msg = "Adding Conversion Data"))
+            print(self._status_function(family = "Enhanced Feature Engineering", msg = "Adding Conversion Data"))
 
     def processing_eda_on_clean_data(self):
         return ProfileReport(self.tbl_enriched_cleaned)
@@ -502,7 +503,7 @@ class StarbucksProject():
         with tarfile.open('backup/preprocessor.tar.gz', 'w:gz') as tar:
             tar.add('backup/preprocessor.pkl', arcname=os.path.basename('backup/preprocessor.pkl'))
         self._s3.upload_file('backup/preprocessor.tar.gz', self.bucket, 'backup/preprocessor.tar.gz')
-        logging.info(self._status_function(family = "Preprocessor", msg = "Generating Preprocessor"))
+        print(self._status_function(family = "Preprocessor", msg = "Generating Preprocessor"))
 
     def model_architecture_tuned(self):
         """
@@ -531,7 +532,7 @@ class StarbucksProject():
         self._s3.upload_file('backup/model.tar.gz', self.bucket, 'backup/model.tar.gz')
         self.best_params = self.lgbm_tuned.best_params_
         self.best_model = self.lgbm_tuned.best_estimator_
-        logging.info(self._status_function(family = "Tuning", msg = "Gridsearch on the Model"))
+        print(self._status_function(family = "Tuning", msg = "Gridsearch on the Model"))
 
     def call_model_architecture_tuned(self):
         """
@@ -542,7 +543,7 @@ class StarbucksProject():
                 self.preprocessor = pickle.load(preprocessor)
             with open('backup/model.pkl', 'rb') as model:
                 self.lgbm_tuned = pickle.load(model)
-            logging.info(self._status_function(family = "Tuning", msg = "Model and Preprocessor Back-up Retrieved"))
+            print(self._status_function(family = "Tuning", msg = "Model and Preprocessor Back-up Retrieved"))
         else:
             self.fit_preprocess()
             self.model_architecture_tuned()
@@ -554,7 +555,7 @@ class StarbucksProject():
         if 'process_model_pipeline.pkl' in os.listdir('backup'):
             with open('backup/process_model_pipeline.pkl', 'rb') as process_model_pipeline:
                 self.process_model_pipeline = pickle.load(process_model_pipeline)
-            logging.info(self._status_function(family = "Pipeline", msg = "Pipeline Back-up Retrieved (Processor + Model)"))
+            print(self._status_function(family = "Pipeline", msg = "Pipeline Back-up Retrieved (Processor + Model)"))
         else:
             self.process_model_pipeline = Pipeline(steps = [('preprocessor', self.preprocessor),\
                                                             ('model_tuned', self.lgbm_tuned)])
@@ -563,7 +564,7 @@ class StarbucksProject():
             with tarfile.open('backup/process_model_pipeline.tar.gz', 'w:gz') as tar:
                 tar.add('backup/process_model_pipeline.pkl', arcname=os.path.basename('backup/process_model_pipeline.pkl'))
             self._s3.upload_file('backup/process_model_pipeline.tar.gz', self.bucket, 'backup/process_model_pipeline.tar.gz')
-            logging.info(self._status_function(family = "Pipeline", msg = "Pipeline Completed (Processor + Model)"))
+            print(self._status_function(family = "Pipeline", msg = "Pipeline Completed (Processor + Model)"))
 
     def custom_predict(self, X):
         """
@@ -580,6 +581,16 @@ class StarbucksProject():
                          axis=1
                                            ).values
         return custom_output
+
+    def save_frame_img(self, df, name, folder = 'images', width = 14, height = 6):
+
+        ax = plt.subplot(111, frame_on=False)
+        ax.xaxis.set_visible(False)
+        ax.yaxis.set_visible(False)
+        fig = plt.gcf()
+        fig.set_size_inches(width, height) 
+        table(ax, df, loc="center")
+        plt.savefig(f'{folder}/{name}.png')
 
     def threshold_iteration_tuning(self, step = 0.01, mode_type = 'accuracy'):
         """
@@ -611,8 +622,26 @@ class StarbucksProject():
         self.thresh_params['bogo'] = self.thresh_evaluation.get('bogo').get('step')
         self.thresh_params['discount'] = self.thresh_evaluation.get('discount').get('step')
         self.thresh_params['informational'] = self.thresh_evaluation.get('informational').get('step')
+        print(self._status_function(family = "Tuning Threshold", msg = "Evaluating Best Threshold on Metric Selected"))
 
         return self.thresh_evaluation
+
+    def measuring_basic_metrics(self, y_test, y_pred):
+        cmatrix = confusion_matrix(y_test, y_pred)
+        metrics = {
+            'accuracy': round(accuracy_score(y_test, y_pred), 4),
+            'precision': round(precision_score(y_test, y_pred), 4),
+            'recall': round(recall_score(y_test, y_pred), 4),
+            'f1_score': round(f1_score(y_test, y_pred), 4),
+            'jaccard_score': round(jaccard_score(y_test, y_pred), 4),
+            'specificity': round((cmatrix[0, 0] / (cmatrix[0, 0] + cmatrix[0, 1])), 4),
+            'false_positive_rate': round((cmatrix[0, 1] / (cmatrix[0, 1] + cmatrix[0, 0])), 4),
+            'false_negative_rate': round((1 - recall_score(y_test, y_pred)), 4)
+        }
+        tmp_metrics = pd.DataFrame(index=metrics.keys(), data=metrics.values(), columns=['value'])\
+                        .reset_index()\
+                        .rename(columns={'index': 'metric'})
+        return tmp_metrics
 
     def model_evaluation_metrics(self, custom:bool):
         """
@@ -657,30 +686,13 @@ class StarbucksProject():
             plt.show()
             fig.savefig(f'images/precision_recall_curve_{section}.png')
 
-        def measuring_basic_metrics(y_test, y_pred):
-            cmatrix = confusion_matrix(y_test, y_pred)
-            metrics = {
-                'accuracy': round(accuracy_score(y_test, y_pred), 4),
-                'precision': round(precision_score(y_test, y_pred), 4),
-                'recall': round(recall_score(y_test, y_pred), 4),
-                'f1_score': round(f1_score(y_test, y_pred), 4),
-                'jaccard_score': round(jaccard_score(y_test, y_pred), 4),
-                'specificity': round((cmatrix[0, 0] / (cmatrix[0, 0] + cmatrix[0, 1])), 4),
-                'false_positive_rate': round((cmatrix[0, 1] / (cmatrix[0, 1] + cmatrix[0, 0])), 4),
-                'false_negative_rate': round((1 - recall_score(y_test, y_pred)), 4)
-            }
-            tmp_metrics = pd.DataFrame(index=metrics.keys(), data=metrics.values(), columns=['value'])\
-                            .reset_index()\
-                            .rename(columns={'index': 'metric'})
-            return tmp_metrics
-
         for i in self.X_test.offer_type.unique():
             tmp_metrics = None
             X_filtered = self.X_test[self.X_test.offer_type == i]
             y_test = self.y_test[self.y_test.index.isin(X_filtered.index)]
             y_pred = self.custom_predict(X_filtered) if custom else self.process_model_pipeline.predict(X_filtered)
 
-            tmp_metrics = measuring_basic_metrics(y_test, y_pred)
+            tmp_metrics = self.measuring_basic_metrics(y_test, y_pred)
             tmp_metrics['offer_type'] = i
             fig_confusion_matrix(y_test, y_pred, i)
 
@@ -697,7 +709,7 @@ class StarbucksProject():
 
         y_test = self.y_test
         y_pred = self.custom_predict(self.X_test) if custom else self.process_model_pipeline.predict(self.X_test)
-        tmp_metrics = measuring_basic_metrics(y_test, y_pred)
+        tmp_metrics = self.measuring_basic_metrics(y_test, y_pred)
         tmp_metrics['offer_type'] = 'all_offers'
         fig_confusion_matrix(y_test, y_pred, 'all_offers')
         tmp_metrics_gathered = pd.concat([tmp_metrics_gathered, tmp_metrics], axis = 0)
@@ -707,7 +719,11 @@ class StarbucksProject():
         fig_roc_auc_curve(y_train, y_pred, 'all_offers')
         fig_precision_recall_curve(y_train, y_pred, 'all_offers')
 
-        return pd.pivot_table(tmp_metrics_gathered, values="value", index=["metric"], columns=["offer_type"])
+        self.basic_metrics_table = pd.pivot_table(tmp_metrics_gathered, values="value", index=["metric"], columns=["offer_type"])
+        self.save_frame_img(self.basic_metrics_table, 'model_metrics')
+        print(self._status_function(family = "Evaluation", msg = "Performing Evaluation of the Model"))
+
+        return
 
     def plot_shap(self, n_samples = 100):
         """
@@ -740,15 +756,17 @@ class StarbucksProject():
         categorical_variables = ['reward', 'year', 'social']
         continuos_variables = ['income']
         for i in categorical_variables:
-            aggregating_table = self.tbl_enriched_cleaned[[i, 'offer_type', 'target']]\
-                                    .groupby(['offer_type', i])\
+            self.business_table[i] = {}
+            for offer in self.tbl_enriched_cleaned.offer_type.unique():
+                aggregating_table = self.tbl_enriched_cleaned[self.tbl_enriched_cleaned.offer_type == offer]
+                aggregating_table = aggregating_table[[i, 'target']]\
+                                    .groupby(i)\
                                     .mean()\
                                     .apply(lambda x: 1 if x[-1] >= 0.50 else 0.00, axis = 1)\
                                     .reset_index()\
                                     .rename(columns={0: 'flag'})
-            self.business_table[i] = {}
-            for offer in aggregating_table['offer_type'].unique():
-                self.business_table[i][offer] = {int(k):int(v) for (k,v) in zip(aggregating_table[i].values, aggregating_table.flag.values)}
+                self.business_table[i][offer] = {int(k): int(v) for (k,v) in zip(aggregating_table[i].values, aggregating_table['flag'].values)}
+
         for i in continuos_variables:
             aggregating_table = self.tbl_enriched_cleaned[[i, 'target']]
             aggregating_table['quantile'] = pd.qcut(aggregating_table[i], q=3, labels=False) + 1
@@ -758,10 +776,44 @@ class StarbucksProject():
             aggregating_table_grouped.drop(['quantile'], axis = 1, inplace = True)
             min_value = aggregating_table_grouped[aggregating_table_grouped['flag'] == 1]['min'].min()
             self.business_table[i] = min_value
+        print(self._status_function(family = "Evaluation", msg = "Building Business Rules Dictionary"))
 
     def application_business_rules(self):
-        continue
 
+        def read_rules(r, y, s, i, o):
+
+            flag_thresh = 1
+            reward_falg = self.business_table.get('reward').get(o).get(r)
+            year_flag = self.business_table.get('year').get(o).get(y)
+            social_flag = self.business_table.get('social').get(o).get(s)
+            income_limit = 0 if i < self.business_table.get('income') else 1
+
+            return 1 if (reward_falg + year_flag + social_flag + income_limit) >= flag_thresh else 0
+
+        self.tbl_enriched_cleaned_business_rules_applied = self.tbl_enriched_cleaned.copy()
+        self.tbl_enriched_cleaned_business_rules_applied['flags'] =\
+            self.tbl_enriched_cleaned_business_rules_applied[list(self.business_table.keys()) + ['offer_type']]\
+                .apply(lambda x: read_rules(x[0], x[1], x[2], x[3], x[4]), axis = 1)
+
+        self.business_rules_metrics = None
+        for i in self.tbl_enriched_cleaned_business_rules_applied.offer_type.unique():
+            y_test = self.tbl_enriched_cleaned_business_rules_applied.query(f"offer_type == '{i}'")['target']
+            y_pred = self.tbl_enriched_cleaned_business_rules_applied.query(f"offer_type == '{i}'")['flags']
+            tmp_tbl = self.measuring_basic_metrics(y_test, y_pred)
+            tmp_tbl['offer_type'] = i
+            if self.business_rules_metrics is None:
+                self.business_rules_metrics = tmp_tbl
+            else:
+                self.business_rules_metrics = pd.concat([self.business_rules_metrics, tmp_tbl], axis = 0)
+        y_test = self.tbl_enriched_cleaned_business_rules_applied['target']
+        y_pred = self.tbl_enriched_cleaned_business_rules_applied['flags']
+        tmp_tbl = self.measuring_basic_metrics(y_test, y_pred)
+        tmp_tbl['offer_type'] = 'all_offers'
+        self.business_rules_metrics = pd.concat([self.business_rules_metrics, tmp_tbl], axis = 0)
+        self.business_rules_metrics = pd.pivot_table(self.business_rules_metrics, values="value", index=["metric"], columns=["offer_type"])
+        self.save_frame_img(self.business_rules_metrics, 'business_metrics')
+
+        print(self._status_function(family = "Evaluation", msg = "Evaluating Business Rules"))
 
 def model_fn(model_dir):
     """
@@ -798,5 +850,9 @@ if __name__ == "__main__":
     SP.fit_preprocess()
     SP.call_model_architecture_tuned()
     SP.full_pipeline()
+    SP.threshold_iteration_tuning()
+    SP.model_evaluation_metrics()
+    SP.business_rules()
+    SP.application_business_rules()
 
     save_model(SP.process_model_pipeline, parser.parse_args().model_dir)
