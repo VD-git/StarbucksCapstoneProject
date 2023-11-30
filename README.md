@@ -22,8 +22,8 @@ A task within the project is to combine transaction, demographic and offer data 
 
 The possible customers' journeys are described below, what it is sought are the one with the green arrow. It also not wanted to send an offer, the customer receives it, buy but have not viewed. That means that the client used the discount, but would buy anyway.
 
-
-![Possibilities of customer journey](/images/business_metrics.png "Possibilities of customer journey")
+**Possibilities of customer journey**
+![Possibilities of customer journey](/images/customers_journeys.png "Possibilities of customer journey")
 
 
 # Requierements
