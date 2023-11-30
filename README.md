@@ -16,7 +16,7 @@ A task within the project is to combine transaction, demographic and offer data 
 
 
 
-![Customers Journeys](images/customers_journeys.jpg)
+![Customers Journeys](https://starbucksprojectcapstone.notebook.us-east-1.sagemaker.aws/lab/tree/StarbucksCapstoneProject/images/customers_journeys.jpg)
 
 
 # Requierements
