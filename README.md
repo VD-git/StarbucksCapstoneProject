@@ -4,10 +4,12 @@ Udacity Machine Learning Engineer AWS Capstone Project
 # Requierements
 
 
-**kernel**
+## **kernel**
+
 conda_tensorflow2_p310
 
-**libraries**
+## **libraries**
+
 lightgbm==4.1.0
 sagemaker==2.197.0
 ydata-profiling==4.6.2
