@@ -1,2 +1,4 @@
 lightgbm==4.1.0
 sagemaker==2.197.0
+ydata-profiling==4.6.2
+shap==0.43.0
