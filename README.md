@@ -43,12 +43,15 @@ It was also possible to create an endpoint of the model and invoke it through la
 
 
 - Creation of the endpoint
+
 ![evaluation table business rules](/images/deploy.png)
 
 - Creation of lambda function
+
 ![evaluation table business rules](/images/lambda_function.png)
 
 - Lambda function in action
+
 ![evaluation table business rules](/images/lambda_function_in_action.png)
 
 
