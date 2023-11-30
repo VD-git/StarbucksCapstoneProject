@@ -16,7 +16,8 @@ A task within the project is to combine transaction, demographic and offer data 
 
 
 
-![Alt text](images/customers_journeys.jpg)
+![Customers Journeys](images/customers_journeys.jpg)
+
 
 # Requierements
 - Inside the sagemaker notebook instance, the kernel that matched with what it was requiered was the one of tensorflow;
