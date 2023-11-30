@@ -27,6 +27,31 @@ The possible customers' journeys are described below, what it is sought are the 
 ![customers_journeys](https://github.com/VD-git/StarbucksCapstoneProject/assets/85261454/ea628d4f-b148-4469-acdd-a8516bd6cfd9)
 
 
+# Metrics
+## **Model:** LGBM ##
+By the comparison of the both table below it is possible to infer that it makes sense to use the model instead of business rules only in order to increase the satisfaction of the client
+
+- Model metrics
+![evaluation table model](/images/model_metrics.png)
+
+
+- Business metrics
+![evaluation table business rules](/images/business_metrics.png)
+
+# Deploy
+It was also possible to create an endpoint of the model and invoke it through lambda function.
+
+
+- Creation of the endpoint
+![evaluation table business rules](/images/deploy.png)
+
+- Creation of lambda function
+![evaluation table business rules](/images/lambda_function.png)
+
+- Lambda function in action
+![evaluation table business rules](/images/lambda_function_in_action.png)
+
+
 # Requierements
 - Inside the sagemaker notebook instance, the kernel that matched with what it was requiered was the one of tensorflow;
 - Few libraries were needed to be install in order to go on with the whole analysis as shown below.
