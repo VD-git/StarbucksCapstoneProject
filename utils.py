@@ -2,6 +2,7 @@ import subprocess
 subprocess.call(['pip', 'install', 'lightgbm'])
 subprocess.call(['pip', 'install', 'sagemaker'])
 subprocess.call(['pip', 'install', 'ydata_profiling'])
+subprocess.call(['pip', 'install', 'shap'])
 
 import pandas as pd
 import numpy as np
@@ -18,6 +19,8 @@ import tarfile
 import joblib
 import argparse
 import matplotlib.pyplot as plt
+import io
+import dill
 
 from ydata_profiling import ProfileReport
 import shap
@@ -25,15 +28,165 @@ from pandas.plotting import table
 
 from lightgbm import LGBMClassifier
 
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import (GridSearchCV, train_test_split)
 from sklearn.preprocessing import (MinMaxScaler, OneHotEncoder, StandardScaler)
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import (FeatureUnion, Pipeline)
 from sklearn.metrics import (accuracy_score, auc, confusion_matrix, ConfusionMatrixDisplay, f1_score, jaccard_score, precision_score,\
                              precision_recall_curve, recall_score, roc_auc_score, roc_curve)
 
-class StarbucksProject():
+# Since using "ColumnsTransformers" the usage of the endpoint does not work because of the "feature_names_in_", it was needed to bring the ground classes that build it
+# Due to this fact "BaseEstimator" and "TransformerMixin" were brought back to rebuild few functions. The same happened for SimpleImputer, note that every class brought
+# has a method called "get_feature_names(self)". In local machine using "Columns Transformers" and "SimpleImputers" works well.
+
+class ColumnSelector(BaseEstimator, TransformerMixin):
+
+        def __init__(self, cols: list):
+            """ Custom sklearn transformer to select a set of columns.
+
+            Attributes:
+                cols (list of str) representing the columns to be selected 
+                in a pandas DataFrame.
+
+            """
+            self.__cols = cols
+            self.__pd_df = pd.DataFrame
+
+        @property
+        def cols(self):
+            return self.__cols
+
+        def get_feature_names(self):
+            return self.__cols
+
+        def fit(self, X, y=None):
+            return self
+
+        def transform(self, X):
+            assert isinstance(X, self.__pd_df), "`X` should be a pandas dataframe"
+            return X.loc[:, self.__cols]
+
+
+class NumericImputer(BaseEstimator, TransformerMixin):
+
+    def __init__(self, method: str = "mean", fill_value=None):
+        """ Custom sklearn transformer to impute numeric data when it is missing.
+
+        Attributes:
+            method (str) representing the method (mean/median/constant)
+            fill_value (int/float) representing the constant value to be imputed 
+
+        """
+        assert method in ["mean", "median", "constant"], \
+               "Allowed methods are `mean`, `median`, `constant`"
+        if method == "constant":
+            assert fill_value is not None, "Fill value must be provided for `constant`"
+        self.__method = method
+        self.__fill_value = fill_value
+        self.__learned_values = {}
+        self.__cols = []
+        self.__pd_df = pd.DataFrame
+        self.__np_mean = np.mean
+        self.__np_median = np.median
+
+    @property
+    def method(self):
+        return self.__method
+
+    @property
+    def fill_value(self):
+        return self.__fill_value
+
+    @property
+    def learned_values(self):
+        return self.__learned_values
+
+    def __define_func(self):
+        if self.__method == "mean":
+            return self.__np_mean
+        elif self.__method == "median":
+            return self.__np_median
+
+    def get_feature_names(self):
+        return self.__cols
+
+    def fit(self, X, y=None):
+        assert isinstance(X, self.__pd_df), "`X` should be a pandas dataframe"
+        X_ = X.copy()
+        self.__cols = X_.columns
+        if self.__method in ["mean", "median"]:
+            func = self.__define_func()
+            for column in X_.columns:
+                self.__learned_values[column] = func(X_.loc[~X_[column].isnull(), column])
+        elif self.__method == "constant":
+            for column in X_.columns:
+                self.__learned_values[column] = self.__fill_value
+        return self
+
+    def transform(self, X):
+        assert isinstance(X, self.__pd_df), "`X` should be a pandas dataframe"
+        X_ = X.copy()
+        for column in X_.columns:
+            X_.loc[X_[column].isnull(), column] = self.__learned_values[column]
+        return X_
+
+
+class CategoricalImputer(BaseEstimator, TransformerMixin):
+
+    def __init__(self, method: str = "most_frequent", fill_value=None):
+        """ Custom sklearn transformer to impute categorical data when it is missing.
+
+        Attributes:
+            method (str) representing the method (most_frequent/constant)
+            fill_value (int/str) representing the constant value to be imputed 
+
+        """
+        assert method in ["most_frequent", "constant"], \
+               "Allowed methods are `most_frequent`, `constant`"
+        if method == "constant":
+            assert fill_value is not None, "Fill value must be provided for `constant`"
+        self.__method = method
+        self.__fill_value = fill_value
+        self.__learned_values = {}
+        self.__cols = []
+        self.__pd_df = pd.DataFrame
+
+    @property
+    def method(self):
+        return self.__method
+
+    @property
+    def fill_value(self):
+        return self.__fill_value
+
+    @property
+    def learned_values(self):
+        return self.__learned_values
+
+    def get_feature_names(self):
+        return self.__cols
+
+    def fit(self, X: pd.DataFrame, y=None):
+        assert isinstance(X, self.__pd_df), "`X` should be a pandas dataframe"
+        X_ = X.copy()
+        self.__cols = X_.columns
+        if self.__method == "most_frequent":
+            for column in X_.columns:
+                self.__learned_values[column] = X_.loc[:, column].value_counts(ascending=False).index[0]
+        elif self.__method == "constant":
+            for column in X_.columns:
+                self.__learned_values[column] = self.__fill_value
+        return self
+
+    def transform(self, X):
+        assert isinstance(X, self.__pd_df), "`X` should be a pandas dataframe"
+        X_ = X.copy()
+        for column in X_.columns:
+            X_.loc[X_[column].isnull(), column] = self.__learned_values[column]
+        return X_
+
+class StarbucksProject(ColumnSelector, NumericImputer, CategoricalImputer):
+
 
     def __init__(self):
         """
@@ -477,21 +630,25 @@ class StarbucksProject():
         self._passthrough_cols = ['email', 'mobile', 'social', 'web', 'target']
 
         one_hot_scaler = Pipeline(\
-            steps = [('impute', SimpleImputer(strategy='most_frequent')),\
-                     ('encode', OneHotEncoder(sparse=False, handle_unknown='ignore'))])
+            steps = [('oh_cols', ColumnSelector(cols=self._one_hot_scaler_cols)),\
+                     ("oh_imputer", CategoricalImputer(method="most_frequent", fill_value=None)),\
+                     ('oh_method', OneHotEncoder(handle_unknown="ignore", sparse=False))])
 
         standard_scaler = Pipeline(\
-            steps = [('impute', SimpleImputer(strategy='mean')),\
-                     ('encode', StandardScaler())])
+            steps=[("std_scaler_cols", ColumnSelector(cols=self._standard_scaler_cols)),\
+                   ("std_scaler_impute", CategoricalImputer(method="most_frequent", fill_value = None)),\
+                   ("std_scaler_method", StandardScaler())])
 
         min_max_scaler = Pipeline(\
-            steps = [('impute', SimpleImputer(strategy='most_frequent')),\
-                     ('encode', MinMaxScaler())])
+            steps=[("min_max_cols", ColumnSelector(cols=self._min_max_scaler_cols)),\
+                   ("min_max_imputer", CategoricalImputer(method="most_frequent", fill_value=None)),\
+                   ("min_max_method", MinMaxScaler())])
 
-        self.preprocessor = ColumnTransformer(transformers=[\
-            ("categorical_transformation", one_hot_scaler, self._one_hot_scaler_cols),\
-            ("continuos_transformation", standard_scaler, self._standard_scaler_cols),\
-            ("discrete_normalization", min_max_scaler, self._min_max_scaler_cols)], remainder = 'passthrough')
+        self.preprocessor = FeatureUnion(transformer_list=[\
+                    ("oh_process", one_hot_scaler),\
+                    ("std_process", standard_scaler),\
+                    ("min_max_process", min_max_scaler)])
+
 
         X, y = self.tbl_enriched_cleaned.drop(['target'], axis = 1), self.tbl_enriched_cleaned.target
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size = 0.25, stratify = y)
@@ -823,6 +980,31 @@ def model_fn(model_dir):
     with open(os.path.join(model_dir, "process_model_pipeline.pkl"), "rb") as f:
         model = pickle.load(f)
     return model
+
+
+def input_fn(input_data, content_type):
+    if content_type == 'text/csv':
+        df = pd.read_csv(StringIO(input_data))
+        return df
+    elif content_type == 'application/json':
+        df = pd.read_json(input_data)
+        return df
+    else:
+        raise ValueError(f"{content_type} currently not supported for inference!")
+
+
+def predict_fn(input_data, model):
+    # probabilities = model.predict_proba(input_data)[:, 1]
+    probabilities = model.predict(input_data)
+    return probabilities
+
+
+def output_fn(predictions, content_type):
+    assert content_type == 'application/json', "Only content type 'application/json' is supported!"
+    response = {
+        "response": predictions.tolist()
+    }
+    return json.dumps(response)
 
 
 def save_model(model, model_dir):
