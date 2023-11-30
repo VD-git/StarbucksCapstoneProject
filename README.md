@@ -24,7 +24,7 @@ The possible customers' journeys are described below, what it is sought are the 
 
 **Possibilities of customer journey**
 
-![Possibilities of customer journey](/images/customers_journeys.png "Possibilities of customer journey")
+![Possibilities of customer journey](/images/customers_journeys.PNG "Possibilities of customer journey")
 
 
 # Requierements
