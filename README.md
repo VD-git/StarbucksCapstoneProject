@@ -28,7 +28,7 @@ The possible customers' journeys are described below, what it is sought are the 
 
 
 # Metrics
-## -**Model:** LGBM ##
+## - **Model:** LGBM ##
 By the comparison of the both table below it is possible to infer that it makes sense to use the model instead of business rules only in order to increase the satisfaction of the client
 
 - Model metrics
