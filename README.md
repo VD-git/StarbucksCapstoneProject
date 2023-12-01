@@ -28,14 +28,14 @@ The possible customers' journeys are described below, what it is sought are the 
 
 
 # Metrics
-## - **Model:** LGBM ##
+### Model: *LightGBM*
 By the comparison of the both table below it is possible to infer that it makes sense to use the model instead of business rules only in order to increase the satisfaction of the client
 
-- Model metrics
+- Model metrics (w/ LightGBM)
 ![evaluation table model](/images/model_metrics.png)
 
 
-- Business metrics
+- Business metrics (w/ Common Knowledge)
 ![evaluation table business rules](/images/business_metrics.png)
 
 # Deploy
@@ -59,10 +59,10 @@ It was also possible to create an endpoint of the model and invoke it through la
 - Inside the sagemaker notebook instance, the kernel that matched with what it was requiered was the one of tensorflow;
 - Few libraries were needed to be install in order to go on with the whole analysis as shown below.
 
-## **kernel**
+### **kernel**
 conda_tensorflow2_p310
 
-## **libraries**
+### **libraries**
 lightgbm==4.1.0
 
 sagemaker==2.197.0
